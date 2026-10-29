@@ -1211,6 +1211,8 @@ final class EditorSession {
     /// Opens each artboard of a Photoshop file as a document of its own; set by the workspace, which makes the tabs.
     /// Without it (no workspace), a file with artboards imports as one canvas, as one without them does.
     @ObservationIgnored var opensArtboard: ((PSDDocument, String) async -> Void)?
+    /// The layer list's Export Layers as PNGs…; set by the project controller, which shows the panels.
+    @ObservationIgnored var exportsLayers: (() async -> Void)?
 
     /// One Photoshop artboard's layers as this tab's document, after the conversion report when there's anything in it.
     func importArtboard(_ parsed: PSDDocument, named name: String) async {

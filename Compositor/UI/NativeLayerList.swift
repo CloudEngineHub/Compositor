@@ -245,6 +245,15 @@ struct NativeLayerList: NSViewRepresentable {
             visibilityItem.isEnabled = validateMenuItem(visibilityItem)
             menu.addItem(visibilityItem)
 
+            menu.addItem(NSMenuItem.separator())
+
+            // 13. Export Layer as PNG… / Export Layers as PNGs…
+            let exportTitle = session.selectedLayerIDs.count > 1 ? "Export Layers as PNGs…" : "Export Layer as PNG…"
+            let exportItem = NSMenuItem(title: exportTitle, action: #selector(exportLayersAction), keyEquivalent: "")
+            exportItem.target = self
+            exportItem.isEnabled = validateMenuItem(exportItem)
+            menu.addItem(exportItem)
+
             return menu
         }
 
@@ -278,12 +287,19 @@ struct NativeLayerList: NSViewRepresentable {
                 return session.canEditLayers && session.activeLayer?.mask != nil && session.activeLayer?.isGroup == false && session.activeLayer?.adjustment == nil
             case #selector(toggleVisibilityAction):
                 return session.canEditLayers && session.activeLayer != nil
+            case #selector(exportLayersAction):
+                return session.canStartProjectOperation && session.activeLayer != nil && session.exportsLayers != nil
             default:
                 if menuItem.submenu != nil && menuItem.title == "Add Mask" {
                     return session.canEditMask && session.activeLayer?.mask == nil
                 }
                 return true
             }
+        }
+
+        @objc func exportLayersAction(_ sender: Any?) {
+            guard let export = session.exportsLayers else { return }
+            Task { await export() }
         }
 
         @objc func duplicateLayerAction(_ sender: Any?) {
