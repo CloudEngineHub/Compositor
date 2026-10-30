@@ -119,6 +119,8 @@ final class CanvasView: NSView {
     private var progressiveDrag: GradientHandle?
     /// RGB Split's center being dragged.
     private var rgbSplitDrag = false
+    /// Volumetric Light's light being dragged on the canvas.
+    private var volumetricDrag = false
     private var antsTimer: Timer?
     private var modifierMonitor: Any?
     private var sampleClickMonitor: Any?
@@ -1831,6 +1833,12 @@ final class CanvasView: NSView {
             synchronizeDisplay()
             return
         }
+        if session.filterEdit?.kind == .volumetricLight, !spaceHeld, let document = session.document {
+            session.moveVolumetricLight(to: session.viewport.documentPoint(from: point, documentSize: document.size))
+            volumetricDrag = true
+            synchronizeDisplay()
+            return
+        }
         if session.levels?.sampleMode != nil, !spaceHeld, let document = session.document {
             session.sampleLevels(at: session.viewport.documentPoint(from: point, documentSize: document.size))
             FloatingPanelController.refocus(NSUserInterfaceItemIdentifier("levelsPanel"))
@@ -1927,6 +1935,11 @@ final class CanvasView: NSView {
         }
         if rgbSplitDrag, let document = session.document {
             session.moveRGBSplitCenter(to: session.viewport.documentPoint(from: point, documentSize: document.size))
+            synchronizeDisplay()
+            return
+        }
+        if volumetricDrag, let document = session.document {
+            session.moveVolumetricLight(to: session.viewport.documentPoint(from: point, documentSize: document.size))
             synchronizeDisplay()
             return
         }
@@ -2143,8 +2156,9 @@ final class CanvasView: NSView {
         window?.invalidateCursorRects(for: self)
     }
     override func mouseUp(with event: NSEvent) {
-        if rgbSplitDrag {
+        if rgbSplitDrag || volumetricDrag {
             rgbSplitDrag = false
+            volumetricDrag = false
             FloatingPanelController.refocus(NSUserInterfaceItemIdentifier("filterPanel"))
             return
         }

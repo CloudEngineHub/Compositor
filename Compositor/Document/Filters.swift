@@ -17,6 +17,7 @@ nonisolated enum FilterKind: String, CaseIterable, Sendable {
     case rgbSplit = "RGB Split"
     case lensEffects = "Lens Effects"
     case tonalContrast = "Tonal Contrast"
+    case volumetricLight = "Volumetric Light"
     case rimLight = "Rim Light"
     case lensCorrection = "Lens Correction"
     case cameraRaw = "Camera Raw Filter"
@@ -35,7 +36,7 @@ nonisolated enum FilterKind: String, CaseIterable, Sendable {
     /// 16-bit pixels, rather than three times through `DeepLayer.run`.
     var runsAtSixteenBits: Bool {
         self == .gaussianBlur || self == .motionBlur || self == .progressiveBlur || self == .bloomGlow || self == .lensEffects
-            || self == .sharpen || self == .rimLight
+            || self == .sharpen || self == .rimLight || self == .volumetricLight
     }
     /// Filters whose output channels each depend on all three input channels (Camera Raw's color, and the ones that work
     /// from brightness), which a 16-bit layer runs the slower, channel-by-channel way (`DeepLayer.run`).
@@ -131,6 +132,7 @@ nonisolated struct FilterSettings: Equatable, Sendable {
     var distortion: Double = 0
     var lens = LensEffectSettings()
     var rimLight = RimLightSettings()
+    var volumetric = VolumetricLightSettings()
     var curves = CurvesSettings()
     var exposure = ExposureSettings()
     var gradientMap = GradientMapSettings()
@@ -189,6 +191,7 @@ nonisolated struct FilterSettings: Equatable, Sendable {
         result.scanlines = scanlines.normalized
         result.lens = lens.normalized
         result.rimLight = rimLight.normalized
+        result.volumetric = volumetric.normalized
         result.cameraRaw = cameraRaw.normalized
         return result
     }
@@ -364,6 +367,12 @@ nonisolated enum PixelFilter {
             image = try render(settings.lens.apply(to: CIImage(cgImage: job.image), side: side), job: job)
         case .rimLight:
             image = try render(RimLighting.apply(to: CIImage(cgImage: job.image), source: job.image, settings: settings.rimLight), job: job)
+        case .volumetricLight:
+            // The light from the document into this image's pixels (rows top-down), then Core Image's (y up).
+            let pixel = settings.volumetric.center?.applying(job.mapping.inverted())
+                ?? VolumetricLighting.brightestPoint(in: job.image)
+            image = try render(VolumetricLighting.apply(to: CIImage(cgImage: job.image), source: job.image, settings: settings.volumetric,
+                                                        light: CGPoint(x: pixel.x, y: Double(height) - pixel.y)), job: job)
         case .motionBlur:
             // Core Image's y axis points up, so its counterclockwise angle matches Photoshop's.
             let streaked = extending(edges, past: job.canvasSides, of: extent).applyingFilter("CIMotionBlur", parameters: [
@@ -808,6 +817,11 @@ extension EditorSession {
                 settings.rgbSplitCenter = CGPoint(x: area.midX, y: area.midY)
                 settings.rgbSplitReach = max(1, hypot(area.width, area.height) / 2)
             }
+            // Volumetric Light starts on the layer's brightest spot: a window, the sky, a lamp.
+            if kind == .volumetricLight, !repeating, let image = layer.asset?.image {
+                settings.volumetric.center = VolumetricLighting.brightestPoint(in: image)
+                    .applying(BrushRaster.pixelToDocument(layer.transform, width: image.width, height: image.height))
+            }
             // Gradient Map starts from the foreground and background colors, as in Photoshop.
             if kind == .gradientMap {
                 settings.gradientMap = GradientMapSettings(shadows: AdjustmentColor(foregroundColor), highlights: AdjustmentColor(backgroundColor))
@@ -853,6 +867,14 @@ extension EditorSession {
         guard let edit = filterEdit, edit.kind == .rgbSplit, edit.settings.rgbSplitRadial, !edit.committing else { return }
         var settings = edit.settings
         settings.rgbSplitCenter = point
+        updateFilter(settings, preview: edit.preview)
+    }
+
+    /// Volumetric Light's light, clicked or dragged on the canvas (document coordinates).
+    func moveVolumetricLight(to point: CGPoint) {
+        guard let edit = filterEdit, edit.kind == .volumetricLight, !edit.committing else { return }
+        var settings = edit.settings
+        settings.volumetric.center = point
         updateFilter(settings, preview: edit.preview)
     }
 
@@ -946,6 +968,7 @@ extension EditorSession {
         if case .gradientMap = colorPicker?.target { closeColorPicker(commit: false) }
         if case .vignette = colorPicker?.target { closeColorPicker(commit: false) }
         if case .rimLight = colorPicker?.target { closeColorPicker(commit: false) }
+        if case .volumetricLight = colorPicker?.target { closeColorPicker(commit: false) }
         if case .dither = colorPicker?.target { closeColorPicker(commit: false) }
         if finishAdjustmentEditing(commit: false) { return }
         guard let edit = filterEdit, !edit.committing else { return }
@@ -980,6 +1003,7 @@ extension EditorSession {
             || (edit.kind == .sharpen && edit.settings.sharpenAmount == 0)
             || (edit.kind == .lensEffects && edit.settings.lens.isIdentity)
             || (edit.kind == .rimLight && edit.settings.rimLight.isIdentity)
+            || (edit.kind == .volumetricLight && edit.settings.volumetric.isIdentity)
             || (edit.kind == .tonalContrast && (edit.settings.tonalAmount == 0 ||
                 (edit.settings.tonalShadows == 0 && edit.settings.tonalMidtones == 0 && edit.settings.tonalHighlights == 0)))
             || (edit.kind == .exposure && edit.settings.exposure == ExposureSettings())
