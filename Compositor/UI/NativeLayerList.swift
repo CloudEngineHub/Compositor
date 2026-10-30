@@ -184,19 +184,21 @@ struct NativeLayerList: NSViewRepresentable {
             mergeItem.isEnabled = validateMenuItem(mergeItem)
             menu.addItem(mergeItem)
 
-            // 7b. Convert to 16-Bit / Convert to 8-Bit
-            let depthTitle = session.activeLayer?.asset?.deep == nil ? "Convert to 16-Bit" : "Convert to 8-Bit"
-            let depthItem = NSMenuItem(title: depthTitle, action: #selector(convertDepthAction), keyEquivalent: "")
-            depthItem.target = self
-            depthItem.isEnabled = validateMenuItem(depthItem)
-            // An HDR layer can go to 16 bits as well as to 8.
-            if session.activeLayer?.asset?.isHDR == true {
-                let sixteenItem = NSMenuItem(title: "Convert to 16-Bit", action: #selector(convertHDRToSixteenAction), keyEquivalent: "")
+            // 7b. Convert to 16-Bit / Convert to 8-Bit: whichever would change a selected layer, both for a mix (an HDR
+            // layer can go to 16 bits as well as to 8). Shown, greyed, for layers neither applies to.
+            let sixteen = session.canConvertToSixteenBit, eight = session.canConvertToEightBit
+            if sixteen || !eight {
+                let sixteenItem = NSMenuItem(title: "Convert to 16-Bit", action: #selector(convertToSixteenBitAction), keyEquivalent: "")
                 sixteenItem.target = self
                 sixteenItem.isEnabled = validateMenuItem(sixteenItem)
                 menu.addItem(sixteenItem)
             }
-            menu.addItem(depthItem)
+            if eight {
+                let eightItem = NSMenuItem(title: "Convert to 8-Bit", action: #selector(convertToEightBitAction), keyEquivalent: "")
+                eightItem.target = self
+                eightItem.isEnabled = validateMenuItem(eightItem)
+                menu.addItem(eightItem)
+            }
 
             menu.addItem(NSMenuItem.separator())
 
@@ -273,8 +275,10 @@ struct NativeLayerList: NSViewRepresentable {
                 return session.canEditLayers && session.activeLayer?.parentID != nil
             case #selector(mergeLayersAction):
                 return session.canMergeLayers
-            case #selector(convertDepthAction), #selector(convertHDRToSixteenAction):
-                return session.canConvertLayerDepth
+            case #selector(convertToSixteenBitAction):
+                return session.canConvertToSixteenBit
+            case #selector(convertToEightBitAction):
+                return session.canConvertToEightBit
             case #selector(addWhiteMaskAction), #selector(addBlackMaskAction):
                 return session.canEditMask && session.activeLayer?.mask == nil
             case #selector(toggleMaskAction):
@@ -333,12 +337,12 @@ struct NativeLayerList: NSViewRepresentable {
             session.mergeLayers()
         }
 
-        @objc func convertDepthAction(_ sender: Any?) {
-            session.convertLayerDepth()
+        @objc func convertToSixteenBitAction(_ sender: Any?) {
+            session.convertLayers(toSixteenBit: true)
         }
 
-        @objc func convertHDRToSixteenAction(_ sender: Any?) {
-            session.convertHDRToSixteenBit()
+        @objc func convertToEightBitAction(_ sender: Any?) {
+            session.convertLayers(toSixteenBit: false)
         }
 
         @objc func addWhiteMaskAction(_ sender: Any?) {

@@ -272,59 +272,68 @@ nonisolated enum DeepLayer {
 extension EditorSession {
     /// Whether the active layer can change between 8 and 16 bits a channel: one layer of pixels, or a blank one (not
     /// text, an adjustment or a folder, which have none of their own to keep).
-    var canConvertLayerDepth: Bool {
-        guard canEditLayers, selectedLayerIDs.count <= 1, let layer = activeLayer else { return false }
-        // GIF frame overrides stay in their 8-bit grid; converting only the cached layer asset would be lost on playback.
-        return layer.gifAnimation == nil && layer.liveText == nil && layer.adjustment == nil && !layer.isGroup
-    }
-
-    /// An HDR layer's Convert to 16-Bit, as one undo step: its pixels clipped to white and kept at 16 bits, more finely
-    /// than half floats hold them, once its highlights have been brought into range.
-    func convertHDRToSixteenBit() {
-        guard canConvertLayerDepth, let index = document?.layers.firstIndex(where: { $0.id == activeLayerID }),
-              let asset = document?.layers[index].asset, asset.isHDR else { return }
-        let converted: ImportedImage
-        do {
-            guard let deep = try DeepLayer.flattened(asset) else { return }
-            converted = try DeepLayer.asset(try DeepLayer.image(deep), name: asset.name)
-        } catch { brushError = error.localizedDescription; return }
-        beginEdit("Convert to 16-Bit")
-        document?.layers[index].asset = converted
-        endEdit()
-    }
-
-    /// The Layers panel's Convert to 16-Bit / Convert to 8-Bit, as one undo step. To 16 bits the pixels stay as they
-    /// are and everything after keeps the extra precision (a blank layer becomes one to paint gradients on); to 8 bits
-    /// they're dithered down, halving the layer's memory and file size.
-    func convertLayerDepth() {
-        guard canConvertLayerDepth, let document, let index = document.layers.firstIndex(where: { $0.id == activeLayerID })
-        else { return }
-        let layer = document.layers[index]
-        guard let asset = layer.asset else {
-            // A blank layer has no pixels yet: it gets clear 16-bit ones over the canvas, to paint and fill into.
-            do {
-                let clear = try DeepLayer.context(width: document.width, height: document.height)
-                guard let deep = clear.makeImage() else { return }
-                let converted = try DeepLayer.asset(deep, name: layer.name)
-                beginEdit("Convert to 16-Bit")
-                self.document?.layers[index].asset = converted
-                self.document?.layers[index].transform = LayerTransform(origin: .zero, size: document.size)
-                endEdit()
-            } catch { brushError = error.localizedDescription }
-            return
+    /// The layers Convert to 16-Bit / 8-Bit works on: the selected ones, and those in selected folders, that hold pixels
+    /// it can convert. GIF frame overrides stay in their 8-bit grid; converting only the cached layer asset would be
+    /// lost on playback.
+    private var depthTargets: [ImageLayer] {
+        guard canEditLayers, let document else { return [] }
+        let selected = selectedLayerIDs.union(activeLayerID.map { [$0] } ?? [])
+        func isSelected(_ layer: ImageLayer) -> Bool {
+            var id: UUID? = layer.id, seen = 0
+            while let current = id, seen < 64 {
+                if selected.contains(current) { return true }
+                id = document.layers.first { $0.id == current }?.parentID
+                seen += 1
+            }
+            return false
         }
-        let converted: ImportedImage
+        return document.layers.filter {
+            isSelected($0) && $0.gifAnimation == nil && $0.liveText == nil && $0.adjustment == nil && !$0.isGroup
+        }
+    }
+    /// Whether one of them is 8-bit, blank or HDR, so Convert to 16-Bit would change it.
+    var canConvertToSixteenBit: Bool { depthTargets.contains { $0.asset?.deep == nil || $0.asset?.isHDR == true } }
+    /// Whether one of them is 16-bit or HDR, so Convert to 8-Bit would change it.
+    var canConvertToEightBit: Bool { depthTargets.contains { $0.asset?.deep != nil } }
+
+    /// Convert to 16-Bit / Convert to 8-Bit, for every selected layer, as one undo step. To 16 bits an 8-bit layer's
+    /// pixels stay as they are and everything after keeps the extra precision; a blank layer gets clear 16-bit pixels over
+    /// the canvas, to paint gradients on; an HDR layer is clipped to white and kept at 16 bits, more finely than half
+    /// floats hold it. To 8 bits they're dithered down, halving the layer's memory and file size.
+    func convertLayers(toSixteenBit: Bool) {
+        guard let document else { return }
+        var converted: [UUID: (asset: ImportedImage, transform: LayerTransform?)] = [:]
         do {
-            if let deep = try DeepLayer.flattened(asset) {
-                let image = try DeepLayer.dithered(deep)
-                converted = ImportedImage(image: image, thumbnail: try PixelAdjust.thumbnail(of: image), name: asset.name)
-            } else {
-                converted = ImportedImage(image: asset.image, thumbnail: asset.thumbnail, name: asset.name,
-                                          deep: try DeepLayer.image(asset.image))
+            for layer in depthTargets {
+                if toSixteenBit {
+                    if let asset = layer.asset, asset.isHDR {
+                        guard let deep = try DeepLayer.flattened(asset) else { continue }
+                        converted[layer.id] = (try DeepLayer.asset(try DeepLayer.image(deep), name: asset.name), nil)
+                    } else if let asset = layer.asset {
+                        guard asset.deep == nil else { continue }
+                        converted[layer.id] = (ImportedImage(image: asset.image, thumbnail: asset.thumbnail, name: asset.name,
+                                                             deep: try DeepLayer.image(asset.image)), nil)
+                    } else {
+                        let clear = try DeepLayer.context(width: document.width, height: document.height)
+                        guard let deep = clear.makeImage() else { continue }
+                        converted[layer.id] = (try DeepLayer.asset(deep, name: layer.name), LayerTransform(origin: .zero, size: document.size))
+                    }
+                } else if let asset = layer.asset, let deep = try DeepLayer.flattened(asset) {
+                    let image = try DeepLayer.dithered(deep)
+                    converted[layer.id] = (ImportedImage(image: image, thumbnail: try PixelAdjust.thumbnail(of: image), name: asset.name), nil)
+                }
             }
         } catch { brushError = error.localizedDescription; return }
-        beginEdit(asset.deep == nil ? "Convert to 16-Bit" : "Convert to 8-Bit")
-        self.document?.layers[index].asset = converted
+        guard !converted.isEmpty else { return }
+        let layers = document.layers.map { layer in
+            guard let change = converted[layer.id] else { return layer }
+            var layer = layer
+            layer.asset = change.asset
+            if let transform = change.transform { layer.transform = transform }
+            return layer
+        }
+        beginEdit(toSixteenBit ? "Convert to 16-Bit" : "Convert to 8-Bit")
+        self.document?.layers = layers
         endEdit()
     }
 }

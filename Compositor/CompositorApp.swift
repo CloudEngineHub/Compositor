@@ -396,6 +396,14 @@ struct CompositorApp: App {
                     Group {
                         Button(session.mergeTitle) { session.mergeLayers() }
                             .configuredKeyboardShortcut("e").disabled(!session.canMergeLayers)
+                        // As in the Layers panel's menu: whichever would change a selected layer, both for a mix.
+                        if session.canConvertToSixteenBit || !session.canConvertToEightBit {
+                            Button("Convert to 16-Bit") { session.convertLayers(toSixteenBit: true) }
+                                .disabled(!session.canConvertToSixteenBit)
+                        }
+                        if session.canConvertToEightBit {
+                            Button("Convert to 8-Bit") { session.convertLayers(toSixteenBit: false) }
+                        }
                         Divider()
                         Button("Flip Layer Horizontal") { session.flipLayers(horizontally: true) }
                             .disabled(!session.canTransform)
