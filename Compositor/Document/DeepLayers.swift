@@ -3,7 +3,8 @@ import AppKit
 /// 16-bit layers in 8-bit documents. A layer whose `ImportedImage` carries `deep` keeps its pixels at 16 bits a
 /// channel; its `image` is a dithered 8-bit copy that the canvas, thumbnails and every tool keep using unchanged.
 /// Operations that understand 16-bit pixels read `deep` and make a new one; any other operation makes a new
-/// `ImportedImage` without it, and the layer is simply 8-bit from then on (like text, rasterized).
+/// `ImportedImage` without it, which `keepLayerDepths` makes 16-bit again as the edit ends, so a layer stays at the depth
+/// it was given until Convert to 8-Bit.
 nonisolated enum DeepLayer {
     /// The one layout 16-bit pixels are kept in: sRGB, premultiplied RGBA, native-endian 16-bit, rows packed
     /// (`width × 8` bytes), top-left origin like `BrushRaster`. `hdr`: an HDR layer's instead, the same but half floats
@@ -186,6 +187,35 @@ nonisolated enum DeepLayer {
         return ImportedImage(image: image, thumbnail: try PixelAdjust.thumbnail(of: image), name: name, deep: deep)
     }
 
+    /// An 8-bit edit's `result` for a layer that was 16-bit (or HDR) as `original`, kept at its depth: where `result`
+    /// matches the layer's old 8-bit copy, nothing changed there and its 16-bit pixels stay (`deep_take_painted`), as
+    /// outside Content-Aware Fill's selection; elsewhere the new 8-bit values are taken at 16 bits. A result of another
+    /// size is all new, and taken whole.
+    static func restored(_ result: CGImage, over original: ImportedImage, name: String) throws -> ImportedImage {
+        guard let deep = try flattened(original) else { return ImportedImage(image: result, thumbnail: try PixelAdjust.thumbnail(of: result), name: name) }
+        let width = result.width, height = result.height
+        guard deep.width == width, deep.height == height, original.image.width == width, original.image.height == height else {
+            return try asset(try image(result), name: name)
+        }
+        let hdr = isHDR(deep)
+        let whole = try context(width: width, height: height, hdr: hdr)
+        BrushRaster.draw(deep, in: CGRect(x: 0, y: 0, width: width, height: height), mask: false, context: whole)
+        let painted = try BrushRaster.copy(result), unpainted = try BrushRaster.copy(original.image)
+        guard let wholeData = whole.data, let paintedData = painted.data, let unpaintedData = unpainted.data else { throw ExportError.render }
+        withExtendedLifetime((painted, unpainted)) {
+            let paintedBytes = paintedData.assumingMemoryBound(to: UInt8.self), unpaintedBytes = unpaintedData.assumingMemoryBound(to: UInt8.self)
+            if hdr {
+                deep_take_painted_hdr(wholeData.assumingMemoryBound(to: UInt16.self), whole.bytesPerRow, paintedBytes, unpaintedBytes,
+                                      painted.bytesPerRow, width, height)
+            } else {
+                deep_take_painted(wholeData.assumingMemoryBound(to: UInt16.self), whole.bytesPerRow, paintedBytes, unpaintedBytes,
+                                  painted.bytesPerRow, width, height)
+            }
+        }
+        guard let made = whole.makeImage() else { throw ExportError.render }
+        return try asset(made, name: name)
+    }
+
     /// Runs an 8-bit operation on a 16-bit image without losing its precision: on 8-bit values a little below its
     /// colors (rounded as dither rounds, `deep_split`) and on those one, two and four steps up, then reads the 16-bit
     /// result off between them (`deep_merge`). The operation must return an image the size it was given.
@@ -334,6 +364,32 @@ extension EditorSession {
         }
         beginEdit(toSixteenBit ? "Convert to 16-Bit" : "Convert to 8-Bit")
         self.document?.layers = layers
+        // The one edit that makes a 16-bit layer 8-bit on purpose.
+        convertsToEightBit = !toSixteenBit
         endEdit()
+        convertsToEightBit = false
+    }
+
+    /// Keeps a layer at the depth it was given: an edit that left a 16-bit or HDR layer `before` with only 8-bit pixels
+    /// (Content-Aware Fill, Remove Background, Dither, an 8-bit tool) has its result made 16-bit again, the layer's
+    /// 16-bit pixels kept wherever the edit didn't change it. Only Convert to 8-Bit makes a layer 8-bit.
+    func keepLayerDepths(since before: CanvasDocument) {
+        guard !convertsToEightBit, let document else { return }
+        let deep = Dictionary(before.layers.compactMap { layer in layer.asset.flatMap { $0.deep != nil ? (layer.id, $0) : nil } },
+                              uniquingKeysWith: { first, _ in first })
+        guard !deep.isEmpty else { return }
+        var restored: [UUID: ImportedImage] = [:]
+        for layer in document.layers where layer.gifAnimation == nil && layer.liveText == nil {
+            guard let original = deep[layer.id], let asset = layer.asset, asset.deep == nil, asset.image !== original.image,
+                  let made = try? DeepLayer.restored(asset.image, over: original, name: asset.name) else { continue }
+            restored[layer.id] = made
+        }
+        guard !restored.isEmpty else { return }
+        self.document?.layers = document.layers.map { layer in
+            guard let asset = restored[layer.id] else { return layer }
+            var layer = layer
+            layer.asset = asset
+            return layer
+        }
     }
 }

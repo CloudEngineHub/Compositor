@@ -289,14 +289,26 @@ struct DeepLayerTests {
         #expect(share > 0.8, "\(mode): \(Int(share * 100))% of the stroke's pixels finer than 8 bits")
     }
 
-    /// Dither's result is a few levels by design; read between three runs it came out in colors. It rasterizes.
-    @Test func ditherRasterizes() async throws {
+    /// Dither works at 8 bits (its result is a few levels by design), but the layer stays 16-bit: where it dithered, its
+    /// 8-bit values are taken; outside its selection the 16-bit pixels are kept exactly. Convert to 8-Bit alone makes a
+    /// layer 8-bit.
+    @Test func eightBitFiltersKeepTheLayerSixteenBit() async throws {
         let (session, url) = try await importedSession()
         defer { try? FileManager.default.removeItem(at: url) }
+        let before = try row(try #require(session.activeLayer?.asset?.deep))
+        session.selectTool(.marquee)
+        session.beginLasso(at: .zero, mode: .replace)
+        session.dragMarquee(to: CGPoint(x: Self.width / 2, y: Self.height), square: false, fromCenter: false)
+        session.finishLasso()
         session.beginFilter(.dither)
         session.updateFilter(FilterSettings(), preview: true)
         await session.commitFilter()
-        #expect(session.activeLayer?.asset?.deep == nil)
+        let deep = try #require(session.activeLayer?.asset?.deep, "still 16-bit")
+        let after = try row(deep)
+        #expect(after[(Self.width / 2)...] == before[(Self.width / 2)...], "untouched pixels keep their 16 bits")
+        #expect(after[..<(Self.width / 2)].allSatisfy { $0 % 257 == 0 }, "dithered pixels are its 8-bit values")
+        session.convertLayers(toSixteenBit: false)
+        #expect(session.activeLayer?.asset?.deep == nil, "Convert to 8-Bit still makes it 8-bit")
     }
 
     /// An adjustment layer over a 16-bit layer, on its own or clipped to it, works at 16 bits in a 16-bit export: a

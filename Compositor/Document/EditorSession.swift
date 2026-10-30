@@ -793,6 +793,7 @@ final class EditorSession {
     }
 
     func endEdit() {
+        if let before = history.endingEditBefore { keepLayerDepths(since: before) }
         history.end(document: document, selection: activeLayerID)
         gifTimelinesByLayerID = gifTimelinesByLayerID.filter { $0.value.source != nil }
     }
@@ -1233,6 +1234,8 @@ final class EditorSession {
     @ObservationIgnored var opensArtboard: ((PSDDocument, String) async -> Void)?
     /// The layer list's Export Layers as PNGs…; set by the project controller, which shows the panels.
     @ObservationIgnored var exportsLayers: (() async -> Void)?
+    /// Set while Convert to 8-Bit ends its edit, so `keepLayerDepths` lets it make 16-bit layers 8-bit.
+    @ObservationIgnored var convertsToEightBit = false
 
     /// One Photoshop artboard's layers as this tab's document, after the conversion report when there's anything in it.
     func importArtboard(_ parsed: PSDDocument, named name: String) async {
