@@ -120,3 +120,7 @@ It needs, all kept outside this repository:
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Volumetric Light's depth model, DepthMini, is distilled from [Depth Anything V2 Small](https://github.com/DepthAnything/Depth-Anything-V2)
+(Apache-2.0) and starts from torchvision's ImageNet-trained MobileNetV3 weights (BSD-3-Clause). It isn't in the app:
+it's downloaded the first time Volumetric Light opens.
